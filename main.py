@@ -14,7 +14,10 @@ from ui        import UpgradeMenu, MainMenu
 from highscore import load_highscore, save_highscore
 from camera    import Camera
 from wave_manager import WaveManager
-from spells    import FreezeSpell, SpellMenu, SpellHUD, SpellTabButton, PauseMenu, ALL_SPELL_CLASSES
+from spells    import (FreezeSpell, BombSpell, ShockwaveSpell,
+                       BombObject, ExplosionRing, ShockwaveObject,
+                       SpellMenu, SpellHUD, SpellTabButton, PauseMenu,
+                       ALL_SPELL_CLASSES)
 
 # State
 STATE_MENU      = "menu"
@@ -129,6 +132,8 @@ def main():
     rebirth_count    = 0
     unlocked_spells  = []
     equipped_spells  = []
+    spell_objects    = pygame.sprite.Group()   # live bombs, shockwaves
+    explosion_rings  = []                      # visual-only ExplosionRing list
     spell_menu       = SpellMenu()
     spell_hud        = SpellHUD()
     spell_tab_btn    = SpellTabButton()
@@ -169,11 +174,16 @@ def main():
                     rebirth_count   = 0
                     unlocked_spells = []
                     equipped_spells = []
+                    spell_objects.empty()
+                    explosion_rings.clear()
                     state = STATE_PLAYING
 
             # ── LEVEL UP ────────────────────────────────────────────────
             elif state == STATE_LEVEL_UP:
-                can_rebirth = rebirth_count < len(ALL_SPELL_CLASSES)
+                # can rebirth if there are still spells not yet unlocked
+                available_spells = [cls for cls in ALL_SPELL_CLASSES
+                                    if cls not in unlocked_spells]
+                can_rebirth = len(available_spells) > 0
                 choice = upgrade_menu.handle_event(event, upgrades, can_rebirth)
                 if choice == "rebirth":
                     rebirth_count += 1
@@ -186,13 +196,9 @@ def main():
                     new_orb = Orbiter(player, angle_offset=0)
                     orbiter_group.add(new_orb)
                     all_sprites.add(new_orb)
-                    idx = rebirth_count - 1
-                    if idx < len(ALL_SPELL_CLASSES):
-                        cls = ALL_SPELL_CLASSES[idx]
-                        if cls not in unlocked_spells:
-                            unlocked_spells.append(cls)
-                    # Open spell select as a paused state
+                    # Open spell select showing only spells not yet unlocked
                     spell_menu.open(rebirth=True)
+                    spell_menu.set_choices(available_spells)
                     state = STATE_SPELL_SEL
                 elif choice == "dismiss_max":
                     mastery_pts = 0
@@ -205,9 +211,11 @@ def main():
 
             # ── SPELL SELECT (paused) ────────────────────────────────────
             elif state == STATE_SPELL_SEL:
-                consumed = spell_menu.handle_event(event, unlocked_spells, equipped_spells)
+                consumed = spell_menu.handle_event(event, spell_menu.choices, equipped_spells)
                 if consumed and not spell_menu.visible:
-                    # Spell was chosen, resume game
+                    # Unlock the spell class that was just picked (rebirth mode)
+                    if spell_menu.last_picked and spell_menu.last_picked not in unlocked_spells:
+                        unlocked_spells.append(spell_menu.last_picked)
                     state = STATE_PLAYING
 
             # ── GAME OVER ───────────────────────────────────────────────
@@ -222,21 +230,25 @@ def main():
                     if event.type == pygame.KEYDOWN and event.key == pygame.K_TAB:
                         if unlocked_spells:
                             spell_menu.open(rebirth=False)
+                            spell_menu.set_choices(unlocked_spells)
                             state = STATE_SPELL_SEL
                     if unlocked_spells:
                         if spell_tab_btn.handle_event(event):
                             spell_menu.open(rebirth=False)
+                            spell_menu.set_choices(unlocked_spells)
                             state = STATE_SPELL_SEL
 
                 # Click-to-cast on HUD spell icons
                 spell_hud.handle_event(event, equipped_spells,
-                                       enemy_group, shielded_group)
+                                       enemy_group, shielded_group,
+                                       spell_objects, player)
 
                 # Hotkey cast
                 if event.type == pygame.KEYDOWN:
                     for spell in equipped_spells:
                         if event.key == spell.KEY:
-                            spell.cast(enemy_group, shielded_group)
+                            spell.cast(enemy_group, shielded_group,
+                                       spell_objects, player)
 
                 # ESC → pause
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -269,6 +281,27 @@ def main():
             for spell in equipped_spells:
                 spell.update()
 
+            # ── Spell objects (bombs, shockwaves) ──
+            spell_objects.update()
+
+            for obj in list(spell_objects):
+                if isinstance(obj, BombObject) and not obj.exploded:
+                    if obj.fuse_timer <= 0:
+                        obj.explode(enemy_group, shielded_group,
+                                    particle_group, all_sprites)
+                        explosion_rings.append(ExplosionRing(
+                            obj.world_pos.x, obj.world_pos.y))
+
+                elif isinstance(obj, ShockwaveObject):
+                    killed = obj.check_kills(enemy_group, shielded_group,
+                                             particle_group, all_sprites)
+
+            # Update explosion rings
+            for ring in explosion_rings[:]:
+                ring.update()
+                if ring.life <= 0:
+                    explosion_rings.remove(ring)
+
             hits = pygame.sprite.groupcollide(
                 enemy_group, orbiter_group, False, False
             )
@@ -283,7 +316,8 @@ def main():
                         kill_threshold += 2
                         mastery_pts += 1
                         truly_maxed = (upgrade_menu.all_maxed(upgrades) and
-                                       rebirth_count >= len(ALL_SPELL_CLASSES))
+                                       len([c for c in ALL_SPELL_CLASSES
+                                            if c not in unlocked_spells]) == 0)
                         if not truly_maxed:
                             state = STATE_LEVEL_UP
                     for _ in range(6):
@@ -324,6 +358,15 @@ def main():
             for p in particle_group:
                 screen.blit(p.image, camera.apply(p))
 
+            # ── Spell object world-space visuals ──
+            for obj in spell_objects:
+                if isinstance(obj, BombObject):
+                    screen.blit(obj.image, camera.apply(obj))
+                elif isinstance(obj, ShockwaveObject):
+                    obj.draw_world(screen, camera)
+            for ring in explosion_rings:
+                ring.draw_world(screen, camera)
+
             draw_minimap(screen, player, enemy_group, camera)
 
             wave_surf = font_wave.render(f"WAVE  {wave_mgr.wave}", True, (180, 200, 255))
@@ -332,7 +375,8 @@ def main():
             # UI stanga
             next_lvl = kill_threshold - kills_since_mastery
             truly_maxed = (upgrade_menu.all_maxed(upgrades) and
-                           rebirth_count >= len(ALL_SPELL_CLASSES))
+                           len([c for c in ALL_SPELL_CLASSES
+                                if c not in unlocked_spells]) == 0)
             if truly_maxed:
                 next_upg_text = "Next UPG: MAX"
                 next_upg_col  = (255, 215, 60)
@@ -385,11 +429,13 @@ def main():
 
             # Overlays per state
             if state == STATE_LEVEL_UP:
-                can_rebirth = rebirth_count < len(ALL_SPELL_CLASSES)
+                available_spells = [cls for cls in ALL_SPELL_CLASSES
+                                    if cls not in unlocked_spells]
+                can_rebirth = len(available_spells) > 0
                 upgrade_menu.draw(screen, mastery_pts, upgrades, rebirth_count, can_rebirth)
 
             elif state == STATE_SPELL_SEL:
-                spell_menu.draw(screen, unlocked_spells, equipped_spells)
+                spell_menu.draw(screen, spell_menu.choices, equipped_spells)
 
             elif state == STATE_PAUSED:
                 pause_menu.draw(screen)

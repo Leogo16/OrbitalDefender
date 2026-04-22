@@ -68,5 +68,12 @@ SHIELD_DURATION   = 5 * 60   # 5s shield ON
 SHIELD_COOLDOWN   = 3 * 60   # 3s shield OFF
 
 # Spells
-FREEZE_COOLDOWN = 15 * 60   # 15 sec in frames
-FREEZE_DURATION = 4  * 60   #  4 sec in frames
+FREEZE_COOLDOWN   = 15 * 60   # 15 sec in frames
+FREEZE_DURATION   = 4  * 60   #  4 sec in frames
+
+BOMB_COOLDOWN     = 10 * 60   # 10 sec in frames
+BOMB_FUSE         = 2  * 60   #  2 sec fuse before explosion
+BOMB_RADIUS       = 50        # explosion radius in world units
+
+SHOCKWAVE_COOLDOWN  = 25 * 60  # 25 sec in frames
+SHOCKWAVE_SPEED     = 6        # pixels per frame expansion
