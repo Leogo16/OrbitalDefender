@@ -16,6 +16,9 @@ class Enemy(pygame.sprite.Sprite):
         self.max_hp = hp
         self.radius = radius if radius is not None else ENEMY_RADIUS_BASE
 
+        self.frozen       = False
+        self.freeze_timer = 0
+
         # Spawn pos
         self.pos = pygame.Vector2(*self._spawn_pos())
 
@@ -78,8 +81,17 @@ class Enemy(pygame.sprite.Sprite):
         self._draw_surface()
         return False
 
+    def apply_freeze(self, duration: int):
+        self.frozen       = True
+        self.freeze_timer = duration
+
     def update(self):
-        direction = self.player.pos - self.pos
-        if direction.length() > 0:
-            self.pos += direction.normalize() * self.speed
+        if self.frozen:
+            self.freeze_timer -= 1
+            if self.freeze_timer <= 0:
+                self.frozen = False
+        else:
+            direction = self.player.pos - self.pos
+            if direction.length() > 0:
+                self.pos += direction.normalize() * self.speed
         self.rect.center = (int(self.pos.x), int(self.pos.y))

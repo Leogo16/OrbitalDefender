@@ -6,19 +6,23 @@ from settings import (
     ORBIT_RADIUS, KILL_PER_LEVEL,
     ORBIT_W, ORBIT_H,
     SPEED_BONUS_PER_UPGRADE, SIZE_BONUS_PER_UPGRADE,
+    SHIELDED_COL,
 )
-from entities  import Orbiter, DeathParticle
+from entities  import Orbiter, DeathParticle, ShieldedEnemy
 from utils     import redistribute_orbiters, make_fresh_scene
 from ui        import UpgradeMenu, MainMenu
 from highscore import load_highscore, save_highscore
 from camera    import Camera
 from wave_manager import WaveManager
+from spells    import FreezeSpell, SpellMenu, SpellHUD, SpellTabButton, PauseMenu, ALL_SPELL_CLASSES
 
 # State
-STATE_MENU     = "menu"
-STATE_PLAYING  = "playing"
-STATE_LEVEL_UP = "level_up"
-STATE_GAMEOVER = "gameover"
+STATE_MENU      = "menu"
+STATE_PLAYING   = "playing"
+STATE_LEVEL_UP  = "level_up"
+STATE_GAMEOVER  = "gameover"
+STATE_SPELL_SEL = "spell_select"
+STATE_PAUSED    = "paused"
 
 
 def apply_upgrade(choice, upgrades, player, orbiter_group, all_sprites):
@@ -73,11 +77,12 @@ def draw_minimap(surface, player, enemy_group, camera):
     mm_surf.fill((10, 10, 25, 180))
     pygame.draw.rect(mm_surf, (40, 60, 100), (0, 0, mm_w, mm_h), 1)
 
-    # Enemy
+    # Enemy (colour-coded: shielded vs normal)
     for e in enemy_group:
         ex = int(e.pos.x * scale_x)
         ey = int(e.pos.y * scale_y)
-        pygame.draw.circle(mm_surf, ENEMY_COL, (ex, ey), 2)
+        col = SHIELDED_COL if hasattr(e, 'shielded') else ENEMY_COL
+        pygame.draw.circle(mm_surf, col, (ex, ey), 2)
 
     # Player
     px = int(player.pos.x * scale_x)
@@ -108,21 +113,32 @@ def main():
     # Starting new game
     def new_game():
         p, a, og, eg, pg = make_fresh_scene()
-        wm = WaveManager(p)
+        sg  = pygame.sprite.Group()   # shielded enemy group
+        wm  = WaveManager(p)
         cam = Camera()
-        return (p, a, og, eg, pg,
+        return (p, a, og, eg, pg, sg,
                 0, 0, 0, KILL_PER_LEVEL,
                 {"speed": 0, "orbit": 0, "size": 0},
                 wm, cam)
 
-    (player, all_sprites, orbiter_group, enemy_group, particle_group,
+    (player, all_sprites, orbiter_group, enemy_group, particle_group, shielded_group,
      kills, mastery_pts, kills_since_mastery, kill_threshold,
      upgrades, wave_mgr, camera) = new_game()
+
+    # Spell / rebirth state (persists across new_game resets during a run)
+    rebirth_count    = 0
+    unlocked_spells  = []
+    equipped_spells  = []
+    spell_menu       = SpellMenu()
+    spell_hud        = SpellHUD()
+    spell_tab_btn    = SpellTabButton()
+    pause_menu       = PauseMenu()
 
     state          = STATE_MENU
     is_new_record  = False
     gameover_timer = 0
     wave_flash     = 0
+    pending_rebirth = False   # waiting for player to pick spell
 
     running = True
     while running:
@@ -133,51 +149,125 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
 
+            # ── PAUSE menu ──────────────────────────────────────────────
+            if state == STATE_PAUSED:
+                result = pause_menu.handle_event(event)
+                if result == "resume":
+                    state = STATE_PLAYING
+                elif result == "menu":
+                    state = STATE_MENU
+                elif result == "quit":
+                    running = False
+                continue   # skip all other handling while paused
+
+            # ── MAIN MENU ───────────────────────────────────────────────
             if state == STATE_MENU:
                 if main_menu.handle_event(event):
-                    (player, all_sprites, orbiter_group, enemy_group, particle_group,
+                    (player, all_sprites, orbiter_group, enemy_group, particle_group, shielded_group,
                      kills, mastery_pts, kills_since_mastery, kill_threshold,
                      upgrades, wave_mgr, camera) = new_game()
+                    rebirth_count   = 0
+                    unlocked_spells = []
+                    equipped_spells = []
                     state = STATE_PLAYING
 
+            # ── LEVEL UP ────────────────────────────────────────────────
             elif state == STATE_LEVEL_UP:
-                choice = upgrade_menu.handle_event(event, upgrades)
-                if choice:
+                can_rebirth = rebirth_count < len(ALL_SPELL_CLASSES)
+                choice = upgrade_menu.handle_event(event, upgrades, can_rebirth)
+                if choice == "rebirth":
+                    rebirth_count += 1
+                    upgrades = {"speed": 0, "orbit": 0, "size": 0}
+                    import settings as _s
+                    player.speed = _s.PLAYER_SPEED
+                    for orb in list(orbiter_group):
+                        orb.kill()
+                    orbiter_group.empty()
+                    new_orb = Orbiter(player, angle_offset=0)
+                    orbiter_group.add(new_orb)
+                    all_sprites.add(new_orb)
+                    idx = rebirth_count - 1
+                    if idx < len(ALL_SPELL_CLASSES):
+                        cls = ALL_SPELL_CLASSES[idx]
+                        if cls not in unlocked_spells:
+                            unlocked_spells.append(cls)
+                    # Open spell select as a paused state
+                    spell_menu.open(rebirth=True)
+                    state = STATE_SPELL_SEL
+                elif choice == "dismiss_max":
+                    mastery_pts = 0
+                    state = STATE_PLAYING
+                elif choice:
                     apply_upgrade(choice, upgrades, player, orbiter_group, all_sprites)
                     mastery_pts -= 1
                     if mastery_pts == 0:
                         state = STATE_PLAYING
 
+            # ── SPELL SELECT (paused) ────────────────────────────────────
+            elif state == STATE_SPELL_SEL:
+                consumed = spell_menu.handle_event(event, unlocked_spells, equipped_spells)
+                if consumed and not spell_menu.visible:
+                    # Spell was chosen, resume game
+                    state = STATE_PLAYING
+
+            # ── GAME OVER ───────────────────────────────────────────────
             elif state == STATE_GAMEOVER:
                 if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
                     state = STATE_MENU
 
-            # ESC
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                if state in (STATE_PLAYING, STATE_LEVEL_UP):
-                    state = STATE_MENU
+            # ── SPELL BOOK (non-rebirth, overlays playing) ───────────────
+            if state == STATE_PLAYING:
+                # Spell menu toggle via TAB or left button
+                if not spell_menu.visible:
+                    if event.type == pygame.KEYDOWN and event.key == pygame.K_TAB:
+                        if unlocked_spells:
+                            spell_menu.open(rebirth=False)
+                            state = STATE_SPELL_SEL
+                    if unlocked_spells:
+                        if spell_tab_btn.handle_event(event):
+                            spell_menu.open(rebirth=False)
+                            state = STATE_SPELL_SEL
+
+                # Click-to-cast on HUD spell icons
+                spell_hud.handle_event(event, equipped_spells,
+                                       enemy_group, shielded_group)
+
+                # Hotkey cast
+                if event.type == pygame.KEYDOWN:
+                    for spell in equipped_spells:
+                        if event.key == spell.KEY:
+                            spell.cast(enemy_group, shielded_group)
+
+                # ESC → pause
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    state = STATE_PAUSED
+
+            # ── ESC closes spell select (non-rebirth) ────────────────────
+            if state == STATE_SPELL_SEL and not spell_menu.rebirth_mode:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    spell_menu.close()
+                    state = STATE_PLAYING
 
         if state == STATE_PLAYING:
 
-            # Cam
             camera.update(player)
 
-            # Wave manager
-            if wave_mgr.update(enemy_group, all_sprites):
-                wave_flash = 120   # 2 secunde flash
+            if wave_mgr.update(enemy_group, all_sprites, shielded_group):
+                wave_flash = 120
 
             if wave_flash > 0:
                 wave_flash -= 1
 
-            # Player
             keys = pygame.key.get_pressed()
             player.update(keys)
             player.set_danger(enemy_group)
 
-            # Enemy
             orbiter_group.update()
             enemy_group.update()
             particle_group.update()
+
+            for spell in equipped_spells:
+                spell.update()
 
             hits = pygame.sprite.groupcollide(
                 enemy_group, orbiter_group, False, False
@@ -192,7 +282,10 @@ def main():
                         kills_since_mastery = 0
                         kill_threshold += 2
                         mastery_pts += 1
-                        state = STATE_LEVEL_UP
+                        truly_maxed = (upgrade_menu.all_maxed(upgrades) and
+                                       rebirth_count >= len(ALL_SPELL_CLASSES))
+                        if not truly_maxed:
+                            state = STATE_LEVEL_UP
                     for _ in range(6):
                         p = DeathParticle(enemy.pos.x, enemy.pos.y)
                         particle_group.add(p)
@@ -209,10 +302,12 @@ def main():
             gameover_timer += 1
             particle_group.update()
 
+        # STATE_SPELL_SEL and STATE_PAUSED — no game updates, world frozen
+
         if state == STATE_MENU:
             main_menu.draw(screen, highscore)
 
-        elif state in (STATE_PLAYING, STATE_LEVEL_UP):
+        elif state in (STATE_PLAYING, STATE_LEVEL_UP, STATE_SPELL_SEL, STATE_PAUSED):
             draw_world_background(screen, camera)
 
             orbit_screen = camera.apply_pos(player.pos)
@@ -229,22 +324,27 @@ def main():
             for p in particle_group:
                 screen.blit(p.image, camera.apply(p))
 
-            # UI in game
             draw_minimap(screen, player, enemy_group, camera)
 
-            # Wave UI
             wave_surf = font_wave.render(f"WAVE  {wave_mgr.wave}", True, (180, 200, 255))
             screen.blit(wave_surf, wave_surf.get_rect(centerx=SCREEN_W // 2, top=10))
 
             # UI stanga
             next_lvl = kill_threshold - kills_since_mastery
+            truly_maxed = (upgrade_menu.all_maxed(upgrades) and
+                           rebirth_count >= len(ALL_SPELL_CLASSES))
+            if truly_maxed:
+                next_upg_text = "Next UPG: MAX"
+                next_upg_col  = (255, 215, 60)
+            else:
+                next_upg_text = f"Next UPG: {next_lvl} kills"
+                next_upg_col  = (120, 200, 120)
+
             hud = [
-                (f"Kills   : {kills}",                       (255, 255, 255)),
-                (f"Best    : {highscore}",                   (255, 215, 60)),
-                #(f"Mastery: {mastery_pts} pts",             (180, 255, 180)),
-                (f"Next UPG: {next_lvl} kills",             (120, 200, 120)),
-                #(f"Orb    : {len(orbiter_group)}",          ORBIT_COL),
-                (f"Enemies : {len(enemy_group)}",            ENEMY_COL),
+                (f"Kills   : {kills}",            (255, 255, 255)),
+                (f"Best    : {highscore}",         (255, 215, 60)),
+                (next_upg_text,                    next_upg_col),
+                (f"Enemies : {len(enemy_group)}",  ENEMY_COL),
             ]
             for i, (text, col) in enumerate(hud):
                 screen.blit(font_s.render(text, True, col), (12, 12 + i * 22))
@@ -256,12 +356,12 @@ def main():
             screen.blit(stat, (12, SCREEN_H - 26))
 
             # UI dreapta
-            for i, text in enumerate(["WASD – Movement", "ESC  – Meniu"]):
+            for i, text in enumerate(["WASD - Movement", "ESC  - Pause"]):
                 screen.blit(font_s.render(text, True, (80, 100, 130)),
                             (SCREEN_W - 180, 12 + i * 20))
 
             # next wave countdown
-            if wave_mgr.is_break:
+            if wave_mgr.is_break and state == STATE_PLAYING:
                 bar_w = 300
                 bar_h = 14
                 bx = (SCREEN_W - bar_w) // 2
@@ -273,14 +373,26 @@ def main():
                 lbl = font_s.render(f"Wave {wave_mgr.wave + 1} in...", True, (140, 160, 220))
                 screen.blit(lbl, lbl.get_rect(centerx=SCREEN_W // 2, bottom=by - 4))
 
-            if wave_flash > 0:
+            if wave_flash > 0 and state == STATE_PLAYING:
                 alpha = min(255, wave_flash * 4)
-                wsurf = font_wave.render(f"── WAVE {wave_mgr.wave} ──", True, (180, 200, 255))
+                wsurf = font_wave.render(f"-- WAVE {wave_mgr.wave} --", True, (180, 200, 255))
                 wsurf.set_alpha(alpha)
                 screen.blit(wsurf, wsurf.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 - 60)))
 
+            # Spell HUD + tab button (always drawn over game world)
+            spell_hud.draw(screen, equipped_spells)
+            spell_tab_btn.draw(screen, unlocked_spells, state == STATE_SPELL_SEL)
+
+            # Overlays per state
             if state == STATE_LEVEL_UP:
-                upgrade_menu.draw(screen, mastery_pts, upgrades)
+                can_rebirth = rebirth_count < len(ALL_SPELL_CLASSES)
+                upgrade_menu.draw(screen, mastery_pts, upgrades, rebirth_count, can_rebirth)
+
+            elif state == STATE_SPELL_SEL:
+                spell_menu.draw(screen, unlocked_spells, equipped_spells)
+
+            elif state == STATE_PAUSED:
+                pause_menu.draw(screen)
 
         elif state == STATE_GAMEOVER:
             draw_world_background(screen, camera)
