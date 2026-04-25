@@ -166,7 +166,7 @@ class BombSpell(_BaseSpell):
     NAME  = "BOMB"
     DESC  = "Places a bomb (2s fuse, r=50)"
     COLOR = (255, 140, 20)
-    KEY   = pygame.K_e
+    KEY   = pygame.K_q
     ICON  = "💣"
 
     def __init__(self):
@@ -255,7 +255,7 @@ class ShockwaveSpell(_BaseSpell):
     NAME  = "SHOCKWAVE"
     DESC  = "Expanding ring kills all"
     COLOR = (200, 100, 255)
-    KEY   = pygame.K_r
+    KEY   = pygame.K_q
     ICON  = "⚡"
 
     def __init__(self):
@@ -334,28 +334,31 @@ class SpellMenu:
         if not self.visible:
             return False
 
+        # ESC always closes (in rebirth mode only if a spell was already picked)
         if event.type == pygame.KEYDOWN:
-            if event.key in (pygame.K_ESCAPE, pygame.K_TAB) and not self.rebirth_mode:
+            if event.key == pygame.K_ESCAPE:
+                if self.rebirth_mode and self.last_picked is None:
+                    return True   # must pick first, block ESC
+                self.close()
+                return True
+            if event.key == pygame.K_TAB and not self.rebirth_mode:
                 self.close()
                 return True
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             cards  = self._card_rects(unlocked_spells)
-            eq_ids = [s.ID for s in equipped]
             for i, rect in enumerate(cards):
                 if rect.collidepoint(event.pos):
                     cls = unlocked_spells[i]
-                    if cls.ID in eq_ids:
-                        if not self.rebirth_mode:
-                            for s in equipped:
-                                if s.ID == cls.ID:
-                                    equipped.remove(s)
-                                    break
-                    else:
-                        equipped.append(cls())
-                        if self.rebirth_mode:
-                            self.last_picked = cls
-                            self.close()
+                    # Block switching if active spell is on cooldown
+                    if equipped and not equipped[0].ready:
+                        return True   # consume click but don't switch
+                    # Single slot: replace whatever is equipped
+                    equipped.clear()
+                    equipped.append(cls())
+                    if self.rebirth_mode:
+                        self.last_picked = cls
+                        self.close()
                     return True
 
         return False
@@ -378,7 +381,7 @@ class SpellMenu:
         else:
             title_txt = "-- SPELL BOOK --"
             title_col = (200, 230, 255)
-            sub_txt   = "Click to equip / un-equip    ESC or TAB to close"
+            sub_txt   = "Click to equip  |  Cannot switch during cooldown  |  ESC to close"
 
         title = self.font_title.render(title_txt, True, title_col)
         screen.blit(title, title.get_rect(center=(cx, SCREEN_H // 2 - CARD_H // 2 - 50)))
@@ -387,6 +390,8 @@ class SpellMenu:
         screen.blit(hint, hint.get_rect(center=(cx, SCREEN_H // 2 - CARD_H // 2 - 22)))
 
         equipped_ids = {s.ID for s in equipped}
+        # Check if switching is blocked (active spell on cooldown)
+        switch_blocked = bool(equipped) and not equipped[0].ready
         mouse_pos    = pygame.mouse.get_pos()
         cards        = self._card_rects(unlocked_spells)
 
@@ -418,6 +423,8 @@ class SpellMenu:
 
             if sel:
                 st_txt, st_col = "EQUIPPED", (100, 255, 160)
+            elif switch_blocked:
+                st_txt, st_col = "COOLDOWN ACTIVE", (220, 80, 80)
             elif hovered:
                 st_txt, st_col = "Click to select", (220, 220, 255)
             else:
@@ -534,48 +541,48 @@ class SpellHUD:
             self._slot_rects = []
             return
 
-        self._slot_rects = self._build_rects(len(equipped))
-        mouse_pos        = pygame.mouse.get_pos()
+        # Only ever show the single equipped spell
+        spell = equipped[0]
+        self._slot_rects = self._build_rects(1)
+        rect  = self._slot_rects[0]
+        mouse_pos = pygame.mouse.get_pos()
+        hovered   = rect.collidepoint(mouse_pos)
 
-        for i, (spell, rect) in enumerate(zip(equipped, self._slot_rects)):
-            hovered = rect.collidepoint(mouse_pos)
+        bg_col = (28, 34, 62) if hovered and spell.ready else (18, 22, 45)
+        pygame.draw.rect(screen, bg_col, rect, border_radius=6)
+        border_col = spell.COLOR if spell.ready else (60, 60, 80)
+        if hovered and spell.ready:
+            border_col = (255, 255, 255)
+        pygame.draw.rect(screen, border_col, rect, width=2, border_radius=6)
 
-            bg_col = (28, 34, 62) if hovered and spell.ready else (18, 22, 45)
-            pygame.draw.rect(screen, bg_col, rect, border_radius=6)
-            border_col = spell.COLOR if spell.ready else (60, 60, 80)
-            if hovered and spell.ready:
-                border_col = (255, 255, 255)
-            pygame.draw.rect(screen, border_col, rect, width=2, border_radius=6)
+        # cooldown fill (bottom-up)
+        pct    = spell.cooldown_pct
+        fill_h = int(rect.h * pct)
+        if fill_h > 0:
+            fill_surf = pygame.Surface((rect.w, fill_h), pygame.SRCALPHA)
+            fill_surf.fill((*spell.COLOR, 45))
+            screen.blit(fill_surf, (rect.x, rect.y + rect.h - fill_h))
 
-            # cooldown fill (bottom-up)
-            pct    = spell.cooldown_pct
-            fill_h = int(rect.h * pct)
-            if fill_h > 0:
-                fill_surf = pygame.Surface((rect.w, fill_h), pygame.SRCALPHA)
-                fill_surf.fill((*spell.COLOR, 45))
-                screen.blit(fill_surf, (rect.x, rect.y + rect.h - fill_h))
+        ico_cx = rect.centerx
+        ico_cy = rect.y + 22
+        pygame.draw.circle(screen, spell.COLOR, (ico_cx, ico_cy), 14)
+        if hovered and spell.ready:
+            pygame.draw.circle(screen, (255, 255, 255), (ico_cx, ico_cy), 14, 2)
+        ico_txt = self.font_ico.render(_ICONS.get(spell.ID, "*"), True, (255, 255, 255))
+        screen.blit(ico_txt, ico_txt.get_rect(center=(ico_cx, ico_cy)))
 
-            # icon circle + letter
-            ico_cx = rect.centerx
-            ico_cy = rect.y + 22
-            pygame.draw.circle(screen, spell.COLOR, (ico_cx, ico_cy), 14)
-            if hovered and spell.ready:
-                pygame.draw.circle(screen, (255, 255, 255), (ico_cx, ico_cy), 14, 2)
-            ico_txt = self.font_ico.render(_ICONS.get(spell.ID, "*"), True, (255, 255, 255))
-            screen.blit(ico_txt, ico_txt.get_rect(center=(ico_cx, ico_cy)))
+        lbl = self.font.render(spell.NAME, True, spell.COLOR)
+        screen.blit(lbl, lbl.get_rect(centerx=ico_cx, top=rect.y + 40))
 
-            lbl = self.font.render(spell.NAME, True, spell.COLOR)
-            screen.blit(lbl, lbl.get_rect(centerx=ico_cx, top=rect.y + 40))
+        if spell.ready:
+            cd = self.font.render("READY", True, (100, 255, 160))
+        else:
+            cd = self.font.render(f"{spell.cd_seconds}s", True, (180, 180, 220))
+        screen.blit(cd, cd.get_rect(centerx=ico_cx, top=rect.y + 53))
 
-            if spell.ready:
-                cd = self.font.render("READY", True, (100, 255, 160))
-            else:
-                cd = self.font.render(f"{spell.cd_seconds}s", True, (180, 180, 220))
-            screen.blit(cd, cd.get_rect(centerx=ico_cx, top=rect.y + 53))
-
-            key_lbl = self.font.render(pygame.key.name(spell.KEY).upper(),
-                                       True, (80, 100, 140))
-            screen.blit(key_lbl, key_lbl.get_rect(centerx=ico_cx, top=rect.y + 2))
+        # Always show Q as the hotkey
+        key_lbl = self.font.render("Q", True, (80, 100, 140))
+        screen.blit(key_lbl, key_lbl.get_rect(centerx=ico_cx, top=rect.y + 2))
 
 
 # ═══════════════════════════════════════════════════

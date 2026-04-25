@@ -217,6 +217,7 @@ def main():
                     if spell_menu.last_picked and spell_menu.last_picked not in unlocked_spells:
                         unlocked_spells.append(spell_menu.last_picked)
                     state = STATE_PLAYING
+                continue   # ESC/click in spell menu never reaches PLAYING handlers
 
             # ── GAME OVER ───────────────────────────────────────────────
             elif state == STATE_GAMEOVER:
@@ -243,22 +244,16 @@ def main():
                                        enemy_group, shielded_group,
                                        spell_objects, player)
 
-                # Hotkey cast
-                if event.type == pygame.KEYDOWN:
-                    for spell in equipped_spells:
-                        if event.key == spell.KEY:
-                            spell.cast(enemy_group, shielded_group,
-                                       spell_objects, player)
+                # Q always casts the equipped spell
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_q:
+                    if equipped_spells:
+                        equipped_spells[0].cast(enemy_group, shielded_group,
+                                                spell_objects, player)
 
-                # ESC → pause
+                # ESC → pause (only when spell menu is NOT open)
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     state = STATE_PAUSED
 
-            # ── ESC closes spell select (non-rebirth) ────────────────────
-            if state == STATE_SPELL_SEL and not spell_menu.rebirth_mode:
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                    spell_menu.close()
-                    state = STATE_PLAYING
 
         if state == STATE_PLAYING:
 
@@ -287,14 +282,29 @@ def main():
             for obj in list(spell_objects):
                 if isinstance(obj, BombObject) and not obj.exploded:
                     if obj.fuse_timer <= 0:
-                        obj.explode(enemy_group, shielded_group,
-                                    particle_group, all_sprites)
+                        spell_kills = obj.explode(enemy_group, shielded_group,
+                                                   particle_group, all_sprites)
                         explosion_rings.append(ExplosionRing(
                             obj.world_pos.x, obj.world_pos.y))
+                        kills += spell_kills
+                        kills_since_mastery += spell_kills
 
                 elif isinstance(obj, ShockwaveObject):
-                    killed = obj.check_kills(enemy_group, shielded_group,
-                                             particle_group, all_sprites)
+                    spell_kills = obj.check_kills(enemy_group, shielded_group,
+                                                  particle_group, all_sprites)
+                    kills += spell_kills
+                    kills_since_mastery += spell_kills
+
+            # Check mastery threshold after spell kills
+            if kills_since_mastery >= kill_threshold:
+                kills_since_mastery -= kill_threshold
+                kill_threshold += 2
+                mastery_pts += 1
+                truly_maxed = (upgrade_menu.all_maxed(upgrades) and
+                               len([c for c in ALL_SPELL_CLASSES
+                                    if c not in unlocked_spells]) == 0)
+                if not truly_maxed:
+                    state = STATE_LEVEL_UP
 
             # Update explosion rings
             for ring in explosion_rings[:]:
