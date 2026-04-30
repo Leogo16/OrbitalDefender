@@ -381,7 +381,7 @@ class SpellMenu:
         else:
             title_txt = "-- SPELL BOOK --"
             title_col = (200, 230, 255)
-            sub_txt   = "Click to equip  |  Cannot switch during cooldown  |  ESC to close"
+            sub_txt   = "Click to equip  |  ESC to close"
 
         title = self.font_title.render(title_txt, True, title_col)
         screen.blit(title, title.get_rect(center=(cx, SCREEN_H // 2 - CARD_H // 2 - 50)))

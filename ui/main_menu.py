@@ -50,13 +50,12 @@ class MainMenu:
         # Instrucțiuni start
         blink = (self._tick // 35) % 2 == 0
         if blink:
-            start = self.font_sub.render("APASĂ  ENTER  SAU  SPACE", True, (180, 220, 255))
+            start = self.font_sub.render("PRESS SPACE TO START", True, (180, 220, 255))
             screen.blit(start, start.get_rect(center=(cx, cy + 110)))
 
         # Controls
         controls = [
-            "WASD – Mișcare",
-            "SPACE – Orbiter nou"
+            "WASD – Movement",
         ]
         for i, line in enumerate(controls):
             s = self.font_small.render(line, True, (80, 100, 140))

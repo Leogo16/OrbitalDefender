@@ -221,6 +221,7 @@ def main():
 
             # ── GAME OVER ───────────────────────────────────────────────
             elif state == STATE_GAMEOVER:
+                pygame.time.wait(3 * 60)
                 if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
                     state = STATE_MENU
 
